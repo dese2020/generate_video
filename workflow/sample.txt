@@ -1,0 +1,28 @@
+
+{
+  "input": {
+    "mode": "same",
+    "override_base": true,
+    "image_url": "https://tu-cdn/entrada.jpg",
+    "prompt": "Mantener iluminación y entorno.",
+    "width": 576,
+    "height": 864,
+    "length": 81,
+    "lora_pairs": [
+      { "high": "H0.safetensors", "high_weight": 0.8, "low": "L0.safetensors", "low_weight": 0.8 },
+      { "high": "H1.safetensors", "high_weight": 0.9, "low": "L1.safetensors", "low_weight": 0.9 },
+      { "high": "H2.safetensors", "high_weight": 1.0, "low": "L2.safetensors", "low_weight": 1.0 },
+      { "high": "H3.safetensors", "high_weight": 1.0, "low": "L3.safetensors", "low_weight": 1.0 },
+      { "high": "H4.safetensors", "high_weight": 0.7, "low": "L4.safetensors", "low_weight": 0.7 }
+    ]
+  }
+}
+
+
+
+{
+  "input": {
+    "workflow": "svi_pro",
+    "image_url": "https://tusitio.com/ejemplo.jpg"
+  }
+}
