@@ -130,18 +130,29 @@ def get_videos(ws, prompt):
     for node_id in history['outputs']:
         node_output = history['outputs'][node_id]
         videos_output = []
+        # 'gifs' 또는 'videos' 키 확인
+        video_list = None
         if 'gifs' in node_output:
-            for video in node_output['gifs']:
+            video_list = node_output['gifs']
+        elif 'videos' in node_output:
+            video_list = node_output['videos']
+        
+        if video_list:
+            for video in video_list:
                 # fullpath를 이용하여 직접 파일을 읽고 base64로 인코딩
-                with open(video['fullpath'], 'rb') as f:
-                    video_data = base64.b64encode(f.read()).decode('utf-8')
-                videos_output.append(video_data)
+                if 'fullpath' in video:
+                    with open(video['fullpath'], 'rb') as f:
+                        video_data = base64.b64encode(f.read()).decode('utf-8')
+                    videos_output.append(video_data)
         output_videos[node_id] = videos_output
 
     return output_videos
 
 def load_workflow(workflow_path):
-    with open(workflow_path, 'r') as file:
+    # 현재 파일의 디렉토리를 기준으로 절대 경로 생성
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    absolute_path = os.path.join(current_dir, workflow_path)
+    with open(absolute_path, 'r') as file:
         return json.load(file)
 
 def handler(job):
@@ -150,106 +161,105 @@ def handler(job):
     logger.info(f"Received job input: {job_input}")
     task_id = f"task_{uuid.uuid4()}"
 
-    # 이미지 입력 처리 (image_path, image_url, image_base64 중 하나만 사용)
+    # 이미지 입력 확인 (image_path, image_url, image_base64 중 하나라도 있으면 I2V)
     image_path = None
+    has_image = False
+    
     if "image_path" in job_input:
         image_path = process_input(job_input["image_path"], task_id, "input_image.jpg", "path")
+        has_image = True
     elif "image_url" in job_input:
         image_path = process_input(job_input["image_url"], task_id, "input_image.jpg", "url")
+        has_image = True
     elif "image_base64" in job_input:
         image_path = process_input(job_input["image_base64"], task_id, "input_image.jpg", "base64")
+        has_image = True
+    
+    # 워크플로우 파일 선택 (이미지가 있으면 I2V, 없으면 T2V)
+    if has_image:
+        workflow_file = "workflow/video_ltx2_i2v.json"
+        workflow_type = "I2V"
+        logger.info("이미지 입력이 감지되어 I2V (Image-to-Video) 워크플로우를 사용합니다.")
     else:
-        # 기본값 사용
-        image_path = "/example_image.png"
-        logger.info("기본 이미지 파일을 사용합니다: /example_image.png")
-
-    # 엔드 이미지 입력 처리 (end_image_path, end_image_url, end_image_base64 중 하나만 사용)
-    end_image_path_local = None
-    if "end_image_path" in job_input:
-        end_image_path_local = process_input(job_input["end_image_path"], task_id, "end_image.jpg", "path")
-    elif "end_image_url" in job_input:
-        end_image_path_local = process_input(job_input["end_image_url"], task_id, "end_image.jpg", "url")
-    elif "end_image_base64" in job_input:
-        end_image_path_local = process_input(job_input["end_image_base64"], task_id, "end_image.jpg", "base64")
+        workflow_file = "workflow/video_ltx2_t2v.json"
+        workflow_type = "T2V"
+        logger.info("이미지 입력이 없어 T2V (Text-to-Video) 워크플로우를 사용합니다.")
     
-    # LoRA 설정 확인 - 배열로 받아서 처리
-    lora_pairs = job_input.get("lora_pairs", [])
-    
-    # 최대 4개 LoRA까지 지원
-    lora_count = min(len(lora_pairs), 4)
-    if lora_count > len(lora_pairs):
-        logger.warning(f"LoRA 개수가 {len(lora_pairs)}개입니다. 최대 4개까지만 지원됩니다. 처음 4개만 사용합니다.")
-        lora_pairs = lora_pairs[:4]
-    
-    # 워크플로우 파일 선택 (end_image_*가 있으면 FLF2V 워크플로 사용)
-    workflow_file = "/new_Wan22_flf2v_api.json" if end_image_path_local else "/new_Wan22_api.json"
-    logger.info(f"Using {'FLF2V' if end_image_path_local else 'single'} workflow with {lora_count} LoRA pairs")
+    logger.info(f"Using {workflow_type} workflow: {workflow_file}")
     
     prompt = load_workflow(workflow_file)
     
-    length = job_input.get("length", 81)
-    steps = job_input.get("steps", 10)
-
-    prompt["244"]["inputs"]["image"] = image_path
-    prompt["541"]["inputs"]["num_frames"] = length
-    prompt["135"]["inputs"]["positive_prompt"] = job_input["prompt"]
-    prompt["135"]["inputs"]["negative_prompt"] = job_input.get("negative_prompt", "bright tones, overexposed, static, blurred details, subtitles, style, works, paintings, images, static, overall gray, worst quality, low quality, JPEG compression residue, ugly, incomplete, extra fingers, poorly drawn hands, poorly drawn faces, deformed, disfigured, misshapen limbs, fused fingers, still picture, messy background, three legs, many people in the background, walking backwards")
-    prompt["220"]["inputs"]["seed"] = job_input["seed"]
-    prompt["540"]["inputs"]["seed"] = job_input["seed"]
-    prompt["540"]["inputs"]["cfg"] = job_input["cfg"]
-    # 해상도(폭/높이) 16배수 보정
-    original_width = job_input["width"]
-    original_height = job_input["height"]
-    adjusted_width = to_nearest_multiple_of_16(original_width)
-    adjusted_height = to_nearest_multiple_of_16(original_height)
-    if adjusted_width != original_width:
-        logger.info(f"Width adjusted to nearest multiple of 16: {original_width} -> {adjusted_width}")
-    if adjusted_height != original_height:
-        logger.info(f"Height adjusted to nearest multiple of 16: {original_height} -> {adjusted_height}")
-    prompt["235"]["inputs"]["value"] = adjusted_width
-    prompt["236"]["inputs"]["value"] = adjusted_height
-    prompt["498"]["inputs"]["context_overlap"] = job_input.get("context_overlap", 48)
-    prompt["498"]["inputs"]["context_frames"] = length
-
-    # step 설정 적용
-    if "834" in prompt:
-        prompt["834"]["inputs"]["steps"] = steps
-        logger.info(f"Steps set to: {steps}")
-        lowsteps = int(steps*0.6)
-        prompt["829"]["inputs"]["step"] = lowsteps
-        logger.info(f"LowSteps set to: {lowsteps}")
-
-    # 엔드 이미지가 있는 경우 617번 노드에 경로 적용 (FLF2V 전용)
-    if end_image_path_local:
-        prompt["617"]["inputs"]["image"] = end_image_path_local
+    # 프롬프트 필수 확인
+    if "prompt" not in job_input or not job_input["prompt"]:
+        raise Exception("프롬프트(prompt)는 필수 입력입니다.")
     
-    # LoRA 설정 적용 - HIGH LoRA는 노드 279, LOW LoRA는 노드 553
-    if lora_count > 0:
-        # HIGH LoRA 노드 (279번)
-        high_lora_node_id = "279"
+    # 기본 파라미터 설정 (워크플로우 기본값과 일치)
+    length = job_input.get("length", 121)  # 92:62 기본값: 121
+    steps = job_input.get("steps", 20)  # 92:9 기본값: 20
+    seed = job_input.get("seed", 10)  # 92:11 기본값: 10
+    cfg = job_input.get("cfg", 4.0)  # 92:47 기본값: 4
+    width = job_input.get("width", 1280)  # 92:89 기본값: 1280
+    height = job_input.get("height", 720)  # 92:89 기본값: 720
+    # frame_rate는 워크플로우에 따라 다름: T2V는 24, I2V는 25
+    frame_rate = job_input.get("frame_rate", 25.0 if has_image else 24.0)
+    positive_prompt = job_input["prompt"]
+    negative_prompt = job_input.get("negative_prompt", "blurry, low quality, still frame, frames, watermark, overlay, titles, has blurbox, has subtitles")
+    
+    # 해상도 16배수 보정
+    adjusted_width = to_nearest_multiple_of_16(width)
+    adjusted_height = to_nearest_multiple_of_16(height)
+    if adjusted_width != width:
+        logger.info(f"Width adjusted to nearest multiple of 16: {width} -> {adjusted_width}")
+    if adjusted_height != height:
+        logger.info(f"Height adjusted to nearest multiple of 16: {height} -> {adjusted_height}")
+    
+    # 공통 노드 설정
+    # 프롬프트 설정 (92:3 - positive, 92:4 - negative)
+    prompt["92:3"]["inputs"]["text"] = positive_prompt
+    prompt["92:4"]["inputs"]["text"] = negative_prompt
+    
+    # Length 설정 (92:62)
+    prompt["92:62"]["inputs"]["value"] = length
+    
+    # Seed 설정 (92:11)
+    prompt["92:11"]["inputs"]["noise_seed"] = seed
+    
+    # Steps 설정 (92:9 - LTXVScheduler)
+    prompt["92:9"]["inputs"]["steps"] = steps
+    
+    # CFG 설정 (92:47 - CFGGuider)
+    prompt["92:47"]["inputs"]["cfg"] = cfg
+    
+    # I2V 전용 설정
+    if has_image:
+        # 이미지 로드 (98)
+        prompt["98"]["inputs"]["image"] = image_path
         
-        # LOW LoRA 노드 (553번)
-        low_lora_node_id = "553"
+        # 이미지 리사이즈 설정 (102)
+        prompt["102"]["inputs"]["resize_type.width"] = adjusted_width
+        prompt["102"]["inputs"]["resize_type.height"] = adjusted_height
         
-        # 입력받은 LoRA pairs 적용 (lora_1부터 시작)
-        for i, lora_pair in enumerate(lora_pairs):
-            if i < 4:  # 최대 4개까지만
-                lora_high = lora_pair.get("high")
-                lora_low = lora_pair.get("low")
-                lora_high_weight = lora_pair.get("high_weight", 1.0)
-                lora_low_weight = lora_pair.get("low_weight", 1.0)
-                
-                # HIGH LoRA 설정 (노드 279번, lora_1부터 시작)
-                if lora_high:
-                    prompt[high_lora_node_id]["inputs"][f"lora_{i+1}"] = lora_high
-                    prompt[high_lora_node_id]["inputs"][f"strength_{i+1}"] = lora_high_weight
-                    logger.info(f"LoRA {i+1} HIGH applied to node 279: {lora_high} with weight {lora_high_weight}")
-                
-                # LOW LoRA 설정 (노드 553번, lora_1부터 시작)
-                if lora_low:
-                    prompt[low_lora_node_id]["inputs"][f"lora_{i+1}"] = lora_low
-                    prompt[low_lora_node_id]["inputs"][f"strength_{i+1}"] = lora_low_weight
-                    logger.info(f"LoRA {i+1} LOW applied to node 553: {lora_low} with weight {lora_low_weight}")
+        # I2V 워크플로우의 frame_rate 설정 (92:51, 92:22, 92:97)
+        # 92:99는 LTXVPreprocess 노드이므로 frame_rate 설정 안 함
+        if "92:51" in prompt:
+            prompt["92:51"]["inputs"]["frame_rate"] = int(frame_rate)
+        if "92:22" in prompt:
+            prompt["92:22"]["inputs"]["frame_rate"] = int(frame_rate)
+        if "92:97" in prompt and "fps" in prompt["92:97"]["inputs"]:
+            prompt["92:97"]["inputs"]["fps"] = int(frame_rate)
+    else:
+        # T2V 전용 설정
+        # EmptyImage 설정 (92:89)
+        prompt["92:89"]["inputs"]["width"] = adjusted_width
+        prompt["92:89"]["inputs"]["height"] = adjusted_height
+        
+        # T2V 워크플로우의 frame_rate 설정
+        # 92:102 (float)와 92:99 (int)만 설정하면 됨
+        # 92:51, 92:22, 92:97은 노드 연결로 자동 설정됨
+        if "92:102" in prompt:
+            prompt["92:102"]["inputs"]["value"] = frame_rate
+        if "92:99" in prompt and prompt["92:99"]["class_type"] == "PrimitiveInt":
+            prompt["92:99"]["inputs"]["value"] = int(frame_rate)
 
     ws_url = f"ws://{server_address}:8188/ws?clientId={client_id}"
     logger.info(f"Connecting to WebSocket: {ws_url}")
